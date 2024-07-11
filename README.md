@@ -50,7 +50,7 @@ The project's key components are organized as follows:
   Stores the empirical data used in the analysis.
 - Output: `output/`
   Contains generated results and visualizations.
-- Checkpoints: `output/checkpoints/`
+- Checkpoints: `checkpoints/`
   Stores intermediate results for efficient analysis resumption.
 
 ## Models
