@@ -68,11 +68,13 @@ Heuristic models (with exponential choice rule):
 - Trade-off model (TRADE)
 
 Model definitions are based on:
+
 Wulff, D. U., & van den Bos, W. (2018). Modeling Choices in Delay Discounting. *Psychological Science, 29(11)*. [https://doi.org/10.1177/0956797616664342](https://doi.org/10.1177/0956797616664342)
 
 ## Data
 
 The empirical data used for initial model comparison is stored in `data/` and is from:
+
 Marzilli Ericson, K. M., White, J. M., Laibson, D., & Cohen, J. D. (2015). Money Earlier or Later? Simple Heuristics Explain Intertemporal Choices Better Than Delay Discounting Does. *Psychological Science, 26(6)*, 826–833. [https://doi.org/10.1177/0956797615572232](https://doi.org/10.1177/0956797615572232)
 
 The data was collected in an experiment that presents participants with a series of binary choices between smaller-sooner and larger-later monetary rewards, varying the amounts and time delays to assess individual intertemporal preferences.
