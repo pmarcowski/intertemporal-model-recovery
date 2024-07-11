@@ -3,7 +3,7 @@ This repository contains the data and analysis scripts for model recovery in int
 
 Intertemporal choice refers to decisions involving tradeoffs between costs and benefits occurring at different points in time, such as choosing between a smaller reward available immediately and a larger reward available after a delay.
 
-The primary goal of this project is to validate our model selection procedure and assess the reliability of the best-fitting intertemporal choice model. This is achieveed through a model recovery analysis, which involves:
+The primary goal of this project is to validate the model selection procedure and assess the reliability of the best-fitting intertemporal choice model. This is achieveed through a model recovery analysis, which involves:
 
 - Model comparison to identify the best-fitting model for explaining empirical choices.
 - Simulation of experimental procedures using agents based on the best-fitting model.
@@ -93,8 +93,8 @@ These checkpoints allow for efficient resumption of the analysis if interrupted.
 2. Parameter estimation for the best-fitting model
 3. Simulation of choices using agents based on the best-fitting model and estimated parameters
 4. Model recovery analysis on simulated data:
-- Recover the best-fitting model
-- Estimate parameters and compare to true values
+    - Recover the best-fitting model
+    - Estimate parameters and compare to true values
 5. Bland-Altman analysis for assessing agreement between true and recovered parameters
 6. Statistical inference using permutation tests
 7. Visualization of results
