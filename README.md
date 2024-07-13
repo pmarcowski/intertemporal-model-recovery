@@ -81,14 +81,14 @@ The data was collected in an experiment that presents participants with a series
 
 ## Checkpoints
 
-The analysis uses checkpoints to save intermediate results in `output/checkpoints/`:
+The analysis uses checkpoints to save intermediate results in `checkpoints/`:
 
 1. Cross-validation results: "checkpoints/cross_validation.rds"
 2. Agent parameters: "checkpoints/agent_parameters.rds"
 3. Simulations: "checkpoints/simulations.rds"
 4. Recovered parameters: "checkpoints/recovered_parameters.rds"
 
-These checkpoints allow for efficient resumption of the analysis if interrupted. To re-run specific sections of the analysis, simply delete the corresponding checkpoint files in `output/checkpoints/`.
+These checkpoints allow for efficient resumption of the analysis if interrupted. To re-run specific sections of the analysis, simply delete the corresponding checkpoint files in `checkpoints/`.
 
 # Analysis
 1. Model comparison using Monte Carlo Cross-Validation (MCCV) to identify the best-fitting model
