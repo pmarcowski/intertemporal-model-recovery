@@ -9,6 +9,7 @@
 
 # Load packages
 library(tidyverse)
+library(ggridges)
 library(see)
 library(knitr)
 library(patchwork)
@@ -121,9 +122,13 @@ kable(
   cv_results_summary[-3],
   caption = "Cross-Validation Results",
   digits = 3
-  )
+)
 
-# Visualize model error
+best_model <- cv_results_summary$model[1]
+
+write_csv(cv_results_summary, "output/mean_model_error.csv")
+
+# Create model error plot
 model_error_plot <- cv_results %>%
   ggplot(aes(x = reorder(model, logloss), y = logloss, color = model, fill = model)) +
   geom_hline(yintercept = -log(0.5), linetype = "dashed") +
@@ -138,7 +143,7 @@ model_error_plot <- cv_results %>%
     color = "black"
   ) +
   labs(
-    title = "Model Selection",
+    title = "Model Error",
     x = NULL, y = "Log-Loss",
     color = "Model", fill = "Model"
   ) +
@@ -149,12 +154,17 @@ model_error_plot <- cv_results %>%
     legend.position = "none",
     plot.title = element_text(hjust = 0.5),
     axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)
+  ) +
+  annotate(
+    "rect",
+    xmin = which(levels(reorder(cv_results$model, cv_results$logloss)) == best_model) - 0.3,
+    xmax = which(levels(reorder(cv_results$model, cv_results$logloss)) == best_model) + 0.3,
+    ymin = -0.3, ymax = 3,
+    color = "transparent", fill = "darkgreen", alpha = 0.2
   )
 
 print(model_error_plot)
 ggsave("output/model_error.png", model_error_plot)
-
-best_model <- cv_results_summary$model[1]
 
 # Model recovery ----------------------------------------------------------
 
@@ -162,12 +172,11 @@ best_model <- cv_results_summary$model[1]
 agents <- load_checkpoint(checkpoint_files$agents)
 
 if (is.null(agents)) {
-  
   starts_agents <- get_starts(
     best_model, n_parameters[best_model],
     choices_list, parameter_limits[[best_model]]
   )
-  
+
   agents <- map(choices_list, ~ {
     fit <- get_fit_optim(
       best_model, n_parameters[best_model],
@@ -192,7 +201,7 @@ if (is.null(simulations)) {
   simulations_list <- map2(choices_list, agents, function(agent_data, agent_param) {
     simulate_agent_mel(agent_data, agent_param, get(best_model))
   })
-  
+
   simulations <- bind_rows(simulations_list, .id = "id")
 
   save_checkpoint(simulations, checkpoint_files$simulations)
@@ -201,13 +210,90 @@ if (is.null(simulations)) {
 # Compare empirical and simulated choice distributions
 empirical_choices <- choices_data$LaterOptionChosen
 simulated_choices <- simulations$LaterOptionChosen
-choice_table <- rbind(table(empirical_choices), table(simulated_choices))
+
+# Prepare data for plotting
+choice_distribution <- bind_rows(
+  tibble(
+    group = "Empirical",
+    choice = factor(empirical_choices, labels = c("Earlier", "Later"))
+  ),
+  tibble(
+    group = "Simulated",
+    choice = factor(simulated_choices, labels = c("Earlier", "Later"))
+  )
+) %>%
+  group_by(group, choice) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(group) %>%
+  mutate(
+    total = sum(count),
+    proportion = count / total
+  ) %>%
+  ungroup()
+
+# Calculate rounded up maximum count
+rounded_max_count <- ceiling(max(choice_distribution$count) / 1000) * 1000
+
+# Create choice distribution plot
+choice_plot <- choice_distribution %>%
+  ggplot(aes(x = choice, y = count, fill = group)) +
+  geom_bar(
+    stat = "identity",
+    width = 0.5, position = position_dodge(width = 0.5),
+    color = "black", alpha = 0.8
+  ) +
+  geom_line(
+    aes(y = proportion * rounded_max_count, group = group),
+    position = position_dodge(width = 0.5), color = "black",
+    linetype = "dashed"
+  ) +
+  geom_point(
+    aes(y = proportion * rounded_max_count),
+    position = position_dodge(width = 0.5)
+  ) +
+  geom_text(
+    aes(label = count),
+    position = position_dodge(width = 0.5),
+    vjust = -1
+  ) +
+  geom_text(
+    aes(y = proportion * rounded_max_count, label = scales::percent(proportion, accuracy = 0.1)),
+    position = position_dodge(width = 0.5),
+    vjust = 2
+  ) +
+  scale_y_continuous(
+    name = "Count",
+    limits = c(0, rounded_max_count),
+    breaks = seq(0, rounded_max_count, by = rounded_max_count / 5),
+    sec.axis = sec_axis(~ . / rounded_max_count, name = "Proportion", labels = scales::percent)
+  ) +
+  scale_fill_see() +
+  scale_color_see() +
+  labs(
+    title = "Choice Distribution Comparison",
+    x = "Choice",
+    fill = "Data Origin"
+  ) +
+  theme_modern() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+print(choice_plot)
+
+# Create a 2x2 table of choices
+choice_table <- table(Empirical = empirical_choices, Simulated = simulated_choices)
 colnames(choice_table) <- c("Earlier Chosen", "Later Chosen")
 rownames(choice_table) <- c("Empirical", "Simulated")
-choice_test <- chisq.test(choice_table)
 
+# Perform chi-square test
+choice_test <- chisq.test(choice_table)
 kable(choice_table)
 print(choice_test)
+
+ggsave("output/choice_distributions.png", choice_plot)
+write_csv(as.data.frame(choice_table), "output/empirical_simulated_choices.csv")
 
 # Load or compute recovered parameters
 recovered <- load_checkpoint(checkpoint_files$recovered)
@@ -215,12 +301,12 @@ recovered <- load_checkpoint(checkpoint_files$recovered)
 if (is.null(recovered)) {
   # Recover parameters by fitting model to simulated choices
   simulations_list <- split(simulations, simulations$id, drop = TRUE)
-  
+
   starts_recovered <- get_starts(
     best_model, n_parameters[best_model],
     simulations_list, parameter_limits[[best_model]]
   )
-  
+
   recovered <- map(simulations_list, ~ {
     fit <- get_fit_optim(
       best_model, n_parameters[best_model],
@@ -240,6 +326,39 @@ recovered_parameters <- prepare_recovery_data(recovered, "recovered", n_paramete
 # Identify parameter columns (excluding 'id' and 'origin')
 parameter_names <- setdiff(names(empirical_parameters), c("id", "origin"))
 
+# Prepare data for parameter distribution comparison
+parameter_distribution <- bind_rows(
+  empirical_parameters %>% mutate(group = "Empirical"),
+  recovered_parameters %>% mutate(group = "Recovered")
+) %>%
+  pivot_longer(cols = all_of(parameter_names), names_to = "parameter", values_to = "value")
+
+# Create parameter distribution plot
+parameter_plot <- parameter_distribution %>%
+  ggplot(aes(x = value, y = parameter, fill = group)) +
+  geom_density_ridges(
+    alpha = 0.8, scale = 0.9,
+    quantile_lines = TRUE, quantiles = 2,
+    color = "black", linetype = "dashed"
+  ) +
+  scale_fill_see() +
+  labs(
+    title = "Parameter Distribution Comparison",
+    x = "Value", y = "Parameter",
+    fill = "Parameter Origin"
+  ) +
+  theme_modern() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5),
+    panel.grid.major.x = element_line(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+
+print(parameter_plot)
+ggsave("output/parameter_distributions.png", parameter_plot)
+
 # Calculate Bland-Altman values for each parameter
 bland_altman_data <- map_dfr(parameter_names, ~ {
   x <- empirical_parameters[[.x]]
@@ -258,6 +377,8 @@ bland_altman_data <- map_dfr(parameter_names, ~ {
   )
 })
 
+write_csv(bland_altman_data, "output/bland_altman_results.csv")
+
 # Create Bland-Altman plot
 bland_altman_plot <- bland_altman_data %>%
   ggplot(aes(x = mean_value, y = diff)) +
@@ -268,7 +389,7 @@ bland_altman_plot <- bland_altman_data %>%
   labs(
     title = "Log-Transformed Bland-Altman Plots for Recovery Analysis",
     x = "Mean of Empirical and Recovered Parameters",
-    y = "Parameter Difference (Empirical - Recovered)"
+    y = "Parameter Difference\n(Empirical - Recovered)"
   ) +
   facet_wrap(~par, scales = "free", labeller = label_parsed) +
   theme_modern() +
@@ -293,7 +414,7 @@ for (i in seq_along(parameter_names)) {
   param <- parameter_names[i]
   emp <- empirical_parameters[[param]]
   rec <- recovered_parameters[[param]]
-  
+
   perm_test <- permutation_test(emp, rec)
   results$observed_diff[i] <- perm_test$observed_diff
   results$p_value[i] <- perm_test$p_value
@@ -306,7 +427,13 @@ kable(
   digits = 3
 )
 
+write_csv(results, "output/empirical_simulated_parameters.csv")
+
+# Figures -----------------------------------------------------------------
+
 # Create figure for model evaluation and recovery
-fig <- model_error_plot / bland_altman_plot + plot_layout(heights = c(1, 0.6))
+fig <- model_error_plot + parameter_plot + bland_altman_plot + choice_plot +
+  plot_layout(widths = c(1, 0.8), heights = c(1, 0.8))
+
 print(fig)
-ggsave("output/figure.png", fig, height = 12)
+ggsave("output/figure.png", fig, height = 8, scale = 1.2)
