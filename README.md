@@ -1,4 +1,7 @@
+![Preview](preview.png)
+
 # Model recovery analysis for intertemporal choice
+
 This repository contains the data and analysis scripts for model recovery in intertemporal choice.
 
 Intertemporal choice refers to decisions involving tradeoffs between costs and benefits occurring at different points in time, such as choosing between a smaller reward available immediately and a larger reward available after a delay.
@@ -16,7 +19,8 @@ This approach allows us to:
 - Evaluate the accuracy of parameter estimates
 - Understand potential limitations in inferring decision processes from choice data
 
-# Installation
+## Installation
+
 No installation is required beyond having R and the necessary libraries. To run the script, simply clone this repository or download the script files and execute them within your R environment.
 
 Clone this repository:
@@ -31,7 +35,8 @@ cd path/to/intertemporal-choice-recovery
 
 Refer to the header of `recover_model.R` script for a complete list of necessary libraries.
 
-# Usage
+## Usage
+
 Set the working directory to the project folder in your R environment:
 ```
 setwd("path/to/intertemporal-choice-recovery")
@@ -39,7 +44,8 @@ setwd("path/to/intertemporal-choice-recovery")
 
 Run the main analysis script `recover_model.R`.
 
-# Project Structure
+### Project Structure
+
 The project's key components are organized as follows:
 
 - Model functions: `R/models/`
@@ -53,7 +59,7 @@ The project's key components are organized as follows:
 - Checkpoints: `checkpoints/`
   Stores intermediate results for efficient analysis resumption.
 
-## Models
+### Models
 
 Six intertemporal choice models are evaluated, implemented in `R/models/`:
 
@@ -71,7 +77,7 @@ Model definitions are based on:
 
 Wulff, D. U., & van den Bos, W. (2018). Modeling Choices in Delay Discounting. *Psychological Science, 29(11)*. [https://doi.org/10.1177/0956797616664342](https://doi.org/10.1177/0956797616664342)
 
-## Data
+### Data
 
 The empirical data used for initial model comparison is stored in `data/` and is from:
 
@@ -79,7 +85,7 @@ Marzilli Ericson, K. M., White, J. M., Laibson, D., & Cohen, J. D. (2015). Money
 
 The data was collected in an experiment that presents participants with a series of binary choices between smaller-sooner and larger-later monetary rewards, varying the amounts and time delays to assess individual intertemporal preferences.
 
-## Checkpoints
+### Checkpoints
 
 The analysis uses checkpoints to save intermediate results in `checkpoints/`:
 
@@ -90,7 +96,8 @@ The analysis uses checkpoints to save intermediate results in `checkpoints/`:
 
 These checkpoints allow for efficient resumption of the analysis if interrupted. To re-run specific sections of the analysis, simply delete the corresponding checkpoint files in `checkpoints/`.
 
-# Analysis
+### Analysis
+
 1. Model comparison using Monte Carlo Cross-Validation (MCCV) to identify the best-fitting model
 2. Parameter estimation for the best-fitting model
 3. Simulation of choices using agents based on the best-fitting model and estimated parameters
@@ -103,17 +110,23 @@ These checkpoints allow for efficient resumption of the analysis if interrupted.
 
 Please note that the modeling procedure, particularly cross-validation, require relatively large computational power and may take some time.
 
-# Results
+### Results
+
 The analysis generates several outputs:
 
 - Visualization of model errors (`output/model_error.png`)
-- Parameter recovery plots, including Bland-Altman plots (`output/parameter_recovery.png`)
+- Comparison table of empirical and simulated choices ('output/empirical_simulated_choices.csv')
+- Comparison table of empirical and simulated parameters ('output/empirical_simulated_parameters.csv')
+- Empirical and simulated choice distributions plot (`output/choice_distributions.png`)
+- Empirical and simulated parameter distributions plot (`output/parameter_distributions.png`)
+- Bland-Altman analysis results (`output/bland_altman_results.csv`)
+- Bland-Altman plot (`output/parameter_recovery.png`)
 - Combined figure for model evaluation and recovery (`output/figure.png`)
 
 These results provide insights into the reliability of the model selection procedure, the identifiability of the best-fitting intertemporal choice model, and the accuracy of parameter recovery.
 
-# License
+## License
 This project is licensed under the MIT License - see the [LICENSE](https://github.com/pmarcowski/intertemporal-model-recovery/blob/main/LICENSE) file for details.
 
-# Contact
+## Contact
 For any questions or feedback, please contact the author directly.
