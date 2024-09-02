@@ -48,9 +48,9 @@ Run the main analysis script `recover_model.R`.
 
 The project's key components are organized as follows:
 
-- Model functions: `R/models/`
+- Model functions: `R/models.R`
   Contains implementations of the intertemporal choice models.
-- Helper functions: `R/tools/`
+- Helper functions: `R/tools.R`
   Includes utility functions for data preprocessing, model fitting, and result visualization.
 - Data: `data/`
   Stores the empirical data used in the analysis.
@@ -61,7 +61,7 @@ The project's key components are organized as follows:
 
 ### Models
 
-Six intertemporal choice models are evaluated, implemented in `R/models/`:
+Six intertemporal choice models are evaluated, implemented in `R/models.R`:
 
 Discounting models (with power choice rule):
 - Exponential discounting model (EXPO)
