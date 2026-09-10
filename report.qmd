@@ -1,0 +1,531 @@
+---
+title: "Model and parameter recovery for choice models"
+author: "Przemysław Marcowski"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    code-fold: show
+    code-tools: true
+    fig-width: 8
+    fig-height: 4.5
+    fig-dpi: 150
+    embed-resources: true
+execute:
+  echo: true
+  warning: false
+  message: false
+  freeze: false
+---
+
+Choice models are compared on how well they predict held-out choices, and the best-predicting model is often read as the model people use. With 25 binary choices per person, several models can predict about equally well, so the winner may reflect noise as much as mechanism. Model recovery tests this directly (Wilson & Collins, 2019; Palminteri, Wyart, & Koechlin, 2017): data are simulated from each candidate model, the same selection is rerun, and the result shows how often the procedure finds the model that generated the data. Here the check is applied to intertemporal choice. Marzilli Ericson, White, Laibson, and Cohen (2015) concluded from cross-validation that heuristics predict money-earlier-or-later (MEL) choices better than delay discounting does, and Wulff and van den Bos (2018) showed that the ranking turned on auxiliary assumptions and noted that the data were thin for fitting individuals. Neither analysis asked whether the design can identify the generating model. The numbers below are read from `output/summary.rds`, which `R/run_analysis.R` computes.
+
+```{r setup}
+#| code-fold: true
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+source("R/models.R")
+source("R/fit.R")
+
+results <- readRDS("output/summary.rds")
+cfg <- results$config
+stopifnot("output/summary.rds comes from a smoke run; rerun R/run_analysis.R without CMR_N_SUBJECTS" = cfg$n_subjects == 0)
+model_levels <- names(MODELS)
+model_family <- vapply(MODELS, function(m) m$family, "")
+family_colors <- c(discounting = "#2f6f9e", heuristic = "#c2612e")
+
+theme_report <- function() {
+  theme_minimal(base_size = 12) +
+    theme(
+      panel.grid = element_blank(),
+      axis.line = element_line(colour = "grey30", linewidth = 0.4),
+      axis.ticks = element_line(colour = "grey30", linewidth = 0.4),
+      strip.text = element_text(hjust = 0.5, face = "plain"),
+      legend.position = "bottom",
+      plot.tag = element_text(face = "bold")
+    )
+}
+
+as_model <- function(x) factor(x, levels = model_levels)
+pct <- function(x) sprintf("%.0f%%", 100 * x)
+num <- function(x, digits = 3) sprintf(paste0("%.", digits, "f"), x)
+join_and <- function(x) {
+  if (length(x) <= 1) return(x)
+  paste(paste(head(x, -1), collapse = ", "), tail(x, 1), sep = " and ")
+}
+
+boot_mean_ci <- function(x, n_boot = 2000, seed = 42) {
+  # Percentile bootstrap interval for a mean over participants.
+  set.seed(seed)
+  means <- replicate(n_boot, mean(sample(x, replace = TRUE)))
+  c(lower = unname(quantile(means, 0.025)), upper = unname(quantile(means, 0.975)))
+}
+
+wilson_ci <- function(k, n, z = qnorm(0.975)) {
+  # Wilson score interval for a proportion.
+  p <- k / n
+  centre <- (p + z^2 / (2 * n)) / (1 + z^2 / n)
+  half <- z * sqrt(p * (1 - p) / n + z^2 / (4 * n^2)) / (1 + z^2 / n)
+  c(lower = centre - half, upper = centre + half)
+}
+
+subjects <- results$subjects
+raw <- readr::read_csv(
+  "data/raw/choices.csv", col_types = readr::cols(.default = readr::col_double()),
+  progress = FALSE
+)
+n_raw <- length(unique(raw$Subject[raw$Condition == 1]))
+n_kept <- nrow(subjects)
+n_included <- sum(subjects$included)
+```
+
+# Data and models
+
+The data are the public export of Ericson et al. (2015) on the Open Science Framework (project 9uxve, CC BY 4.0). We use condition 1, absolute gains in delay framing, for example \$5 today against \$5 plus a further \$5 in four weeks. Its `r n_raw` Mechanical Turk participants each answered 25 MEL questions drawn at random from a pool of about 700 items, so no two participants saw the same set. Two sample rules apply. We drop blank responses and keep participants with at least `r MIN_TRIALS` answered trials (`r n_kept`), and the analysed sample further requires at least `r MIN_MINORITY` choices of the rarer option (`r n_included`), because a participant who always chose the same option tells us nothing about the trade-off between amount and delay.
+
+The six models follow Wulff and van den Bos (2018). Three discounting models value each option by shrinking its amount over its delay and choose between the two values by a power rule with a sensitivity parameter. Three heuristic models compare the options attribute by attribute and choose by a logistic rule, ITCH and DRIFT without a bias term. Every model gets the same lapse rate and the same weak prior on its parameters, so the comparison is between value and choice assumptions, not between fitting conventions.
+
+```{r models-table}
+tibble(
+  Model = model_levels,
+  Name = vapply(MODELS, function(m) m$label, ""),
+  Family = model_family,
+  Parameters = vapply(MODELS, function(m) paste(m$par_names, collapse = ", "), ""),
+  `Choice rule` = ifelse(model_family == "discounting", "power", "logistic")
+) %>%
+  knitr::kable(align = "lllll")
+```
+
+# Procedure
+
+One selection procedure serves both the empirical comparison and the recovery, because recovery has to validate the procedure actually used.
+
+1. **Split and fit.** For each participant, draw `r cfg$n_reps` random splits of their trials into a training and a held-out set. Fit every model to the training trials from `r cfg$n_restarts` random starts, all six models on the same split.
+2. **Score and select.** Score each fit on the held-out trials by log-loss, the mean negative log-probability of the choices made, in nats per choice; a coin flip scores `r num(log(2))`. A participant's winner is the model with the lowest mean log-loss over splits, and the sample's winner is the model with the lowest mean over participants.
+3. **Simulate.** Fit each model to each analysed participant's full data. Each fitted parameter set, an agent, simulates one synthetic participant on that participant's own items, and the sample rules apply to the synthetic choices as to the real ones.
+4. **Recover the model.** Run steps 1 and 2 on the synthetic participants. Counting selections by generating model gives the confusion matrix, P(selected | generating), and normalising its columns gives the inversion matrix, P(generating | selected), the chance that a given selection points at the right model.
+5. **Recover the parameters.** Refit each generating model to its own synthetic participants and compare recovered with generating values, matched by participant.
+
+::: {.callout-note title="Settings"}
+Splits are `r round(100 * cfg$train_prop)`/`r round(100 * (1 - cfg$train_prop))`; fits use L-BFGS-B with a symmetric lapse of `r cfg$epsilon` and a Gaussian prior with standard deviation `r cfg$prior_sd` on every parameter; the seed is `r cfg$seed`.
+:::
+
+# Empirical comparison
+
+We score each model per participant and compare the leaders with a bootstrap over participants.
+
+```{r empirical-data}
+empirical <- results$empirical %>%
+  inner_join(subjects, by = "subject") %>%
+  mutate(model = as_model(model), family = model_family[as.character(model)])
+analysed <- empirical %>% filter(included)
+
+pooled <- analysed %>%
+  group_by(model, family) %>%
+  summarise(mean_logloss = mean(logloss), median_logloss = median(logloss), .groups = "drop") %>%
+  arrange(mean_logloss)
+best_model <- as.character(pooled$model[1])
+runner_up <- as.character(pooled$model[2])
+
+winners <- analysed %>%
+  group_by(subject) %>%
+  slice_min(logloss, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  count(model, name = "won") %>%
+  complete(model = as_model(model_levels), fill = list(won = 0L))
+
+paired <- analysed %>%
+  select(subject, model, logloss) %>%
+  pivot_wider(names_from = model, values_from = logloss) %>%
+  pivot_longer(-c(subject, all_of(best_model)), names_to = "model", values_to = "logloss") %>%
+  mutate(difference = logloss - .data[[best_model]], model = as_model(model)) %>%
+  group_by(model) %>%
+  summarise(mean_difference = mean(difference), ci = list(boot_mean_ci(difference)), .groups = "drop") %>%
+  mutate(
+    lower = vapply(ci, `[[`, numeric(1), "lower"),
+    upper = vapply(ci, `[[`, numeric(1), "upper"),
+    family = model_family[as.character(model)]
+  )
+
+worse_than_chance <- analysed %>%
+  group_by(model) %>%
+  summarise(share = mean(logloss > log(2)), .groups = "drop")
+
+train_sizes <- range(floor(subjects$n_trials[subjects$included] * cfg$train_prop))
+```
+
+```{r fig-empirical, fig.height=4.5}
+#| fig-cap: "Held-out performance of the six models on the analysed participants. A: per-participant mean log-loss over repetitions, with the median and interquartile range; the dashed line is a coin flip. B: per-participant difference to the best model, mean with a 95% percentile bootstrap interval over participants. Blue marks discounting models, orange heuristic models."
+panel_a <- ggplot(analysed, aes(x = model, y = logloss, colour = family)) +
+  geom_hline(yintercept = log(2), linetype = "dashed", colour = "grey50") +
+  geom_jitter(width = 0.18, height = 0, alpha = 0.3, size = 0.9) +
+  stat_summary(
+    fun = median, fun.min = function(x) quantile(x, 0.25), fun.max = function(x) quantile(x, 0.75),
+    geom = "pointrange", colour = "black", size = 0.4
+  ) +
+  scale_colour_manual(values = family_colors, guide = "none") +
+  labs(x = NULL, y = "Held-Out Log-Loss (Nats per Choice)", tag = "A") +
+  theme_report()
+
+panel_b <- ggplot(paired, aes(x = model, y = mean_difference, colour = family)) +
+  geom_pointrange(aes(ymin = lower, ymax = upper), size = 0.5) +
+  scale_colour_manual(values = family_colors, guide = "none") +
+  labs(x = NULL, y = sprintf("Log-Loss Difference to %s", best_model), tag = "B") +
+  theme_report() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+panel_a + panel_b + plot_layout(widths = c(1.4, 1))
+```
+
+```{r empirical-table}
+pooled %>%
+  left_join(winners, by = "model") %>%
+  transmute(
+    Model = model, Family = family,
+    `Mean log-loss` = round(mean_logloss, 3), `Median log-loss` = round(median_logloss, 3),
+    `Participants won` = won
+  ) %>%
+  knitr::kable()
+```
+
+::: {.callout-note title="Key result"}
+```{r empirical-key-result}
+#| echo: false
+#| results: asis
+pooled_of <- function(m) pooled$mean_logloss[pooled$model == m]
+won_of <- function(m) winners$won[winners$model == m]
+chance_of <- function(m) worse_than_chance$share[worse_than_chance$model == m]
+paired_runner <- paired[paired$model == runner_up, ]
+cat(sprintf(
+  paste(
+    "**Winner.** %s predicts held-out choices best, at %s nats per choice against %s for a coin",
+    "flip. %s is close behind at %s. The paired difference is %s with a 95%% bootstrap interval of",
+    "%s to %s, so the sample cannot separate the two with confidence.\n\n",
+    "**Per participant.** %s wins %d of %d participants, TRADE %d, and %s %d. %s's near-equal",
+    "average comes from predicting most participants almost as well as %s, not from winning many",
+    "of them, and TRADE's %d wins point to real heterogeneity in how participants decide.\n\n",
+    "**Heuristics.** ITCH and DRIFT predict worse than a coin flip for %s and %s of participants.",
+    "Four free weights fitted to %d to %d training choices presumably overfit; ITCH's attribute",
+    "covariates are near-orthogonal on this item pool and DRIFT's only moderately correlated, so",
+    "collinearity is at most a small part of the cause.\n"
+  ),
+  best_model, num(pooled_of(best_model)), num(log(2)),
+  runner_up, num(pooled_of(runner_up)), num(paired_runner$mean_difference),
+  num(paired_runner$lower), num(paired_runner$upper),
+  best_model, won_of(best_model), n_included, won_of("TRADE"), runner_up, won_of(runner_up),
+  runner_up, best_model, won_of("TRADE"),
+  pct(chance_of("ITCH")), pct(chance_of("DRIFT")), train_sizes[1], train_sizes[2]
+))
+```
+:::
+
+The recovery below asks whether this ranking identifies the generating model.
+
+# Model recovery
+
+We select a winner for every synthetic participant and tabulate selections against the model that generated the data. An attractor, below, is a model the procedure selects for data it did not generate.
+
+```{r recovery-data}
+selected <- results$recovery %>%
+  group_by(generating, subject) %>%
+  slice_min(logloss, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  transmute(generating = as_model(generating), subject, selected = as_model(model))
+
+confusion <- selected %>%
+  count(generating, selected, name = "n") %>%
+  complete(generating = as_model(model_levels), selected = as_model(model_levels), fill = list(n = 0L)) %>%
+  group_by(generating) %>%
+  mutate(p_selected_given_generating = n / sum(n)) %>%
+  ungroup() %>%
+  group_by(selected) %>%
+  mutate(
+    p_generating_given_selected = if (sum(p_selected_given_generating) > 0) {
+      p_selected_given_generating / sum(p_selected_given_generating)
+    } else {
+      NA_real_
+    }
+  ) %>%
+  ungroup()
+
+diagonal <- confusion %>%
+  filter(generating == selected) %>%
+  group_by(generating) %>%
+  mutate(
+    n_analysed = sum(confusion$n[confusion$generating == generating]),
+    lower = wilson_ci(n, n_analysed)["lower"],
+    upper = wilson_ci(n, n_analysed)["upper"]
+  ) %>%
+  ungroup()
+
+pooled_recovery <- results$recovery %>%
+  group_by(generating, model) %>%
+  summarise(mean_logloss = mean(logloss), .groups = "drop") %>%
+  group_by(generating) %>%
+  slice_min(mean_logloss, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  transmute(generating = as_model(generating), pooled_winner = as_model(model)) %>%
+  arrange(generating)
+
+generators <- results$synthetic_subjects %>%
+  group_by(generating = as_model(generating)) %>%
+  summarise(
+    simulated = n(), analysed = sum(included),
+    later_rate = sum(n_later[included]) / sum(n_trials[included]),
+    determinism = mean(determinism[included]),
+    .groups = "drop"
+  )
+
+families <- c("discounting", "heuristic")
+family_confusion <- selected %>%
+  transmute(g = model_family[as.character(generating)], s = model_family[as.character(selected)]) %>%
+  count(g, s) %>%
+  complete(g = families, s = families, fill = list(n = 0L)) %>%
+  group_by(g) %>%
+  mutate(p = n / sum(n)) %>%
+  ungroup()
+```
+
+```{r fig-recovery, fig.height=4.2}
+#| fig-cap: "Model recovery. Left: the confusion matrix, the probability that each model is selected given the model that generated the data. Right: the inversion matrix, the probability that each model generated the data given the model selected, taking the six generating models as equally likely beforehand. Rows and columns are ordered by family, discounting models first."
+heat <- function(data, fill, title) {
+  ggplot(data, aes(x = selected, y = forcats::fct_rev(generating), fill = .data[[fill]])) +
+    geom_tile(colour = "white", linewidth = 0.6) +
+    geom_text(aes(label = ifelse(is.na(.data[[fill]]), "", sprintf("%.2f", .data[[fill]]))), size = 3.2) +
+    scale_fill_gradient(low = "white", high = "#2f6f9e", limits = c(0, 1), na.value = "grey95", guide = "none") +
+    coord_equal() +
+    labs(x = "Selected Model", y = "Generating Model", title = title) +
+    theme_report() +
+    theme(
+      axis.line = element_blank(), axis.ticks = element_blank(),
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+      axis.text.y = element_text(size = 9),
+      plot.title = element_text(hjust = 0.5, size = 11)
+    )
+}
+
+heat(confusion, "p_selected_given_generating", "Confusion: P(Selected | Generating)") +
+  heat(confusion, "p_generating_given_selected", "Inversion: P(Generating | Selected)")
+```
+
+```{r recovery-table}
+diagonal %>%
+  inner_join(generators, by = "generating") %>%
+  inner_join(pooled_recovery, by = "generating") %>%
+  transmute(
+    `Generating model` = generating,
+    `Synthetic participants analysed` = sprintf("%d of %d", analysed, simulated),
+    `P(correct)` = sprintf("%.2f [%.2f, %.2f]", p_selected_given_generating, lower, upper),
+    `Pooled winner` = pooled_winner,
+    `Later-choice rate` = round(later_rate, 2),
+    `Mean |P − 0.5|` = round(determinism, 2)
+  ) %>%
+  knitr::kable()
+```
+
+::: {.callout-note title="Key result"}
+```{r recovery-key-result}
+#| echo: false
+#| results: asis
+p_sel <- function(g, s) confusion$p_selected_given_generating[confusion$generating == g & confusion$selected == s]
+p_gen <- function(g, s) confusion$p_generating_given_selected[confusion$generating == g & confusion$selected == s]
+fam_p <- function(g, s) family_confusion$p[family_confusion$g == g & family_confusion$s == s]
+emp_rate <- with(subjects[subjects$included, ], sum(n_later) / sum(n_trials))
+diag_of <- function(m) p_sel(m, m)
+others <- setdiff(model_levels, "TRADE")
+expo_pull <- range(vapply(setdiff(others, "EXPO"), function(g) p_sel(g, "EXPO"), 1))
+trade_pull <- range(vapply(others, function(g) p_sel(g, "TRADE"), 1))
+rate_range <- range(generators$later_rate)
+pooled_right <- as.character(pooled_recovery$generating[pooled_recovery$generating == pooled_recovery$pooled_winner])
+pooled_wrong <- pooled_recovery %>%
+  filter(generating != pooled_winner) %>%
+  mutate(text = sprintf("%s data %s", generating, pooled_winner)) %>%
+  pull(text)
+pooled_calls <- if (length(pooled_wrong) > 0) {
+  sprintf("and calls %s", join_and(pooled_wrong))
+} else {
+  "and sends no generator's data to another model"
+}
+stopifnot(length(pooled_right) > 0, length(emp_rate) == 1)
+cat(sprintf(
+  paste(
+    "**Recovered.** The procedure recovers EXPO agents %s of the time and TRADE agents %s. It",
+    "recovers HYPER2 agents %s of the time, DEXPO %s, ITCH %s, and DRIFT %s. At the level of",
+    "families it does better: discounting data are called some discounting model %s of the time,",
+    "and heuristic data some heuristic model %s.\n\n",
+    "**Attractors.** EXPO is selected for %s to %s of the agents from every generator except TRADE,",
+    "and TRADE for %s to %s of the agents from every other generator.\n\n",
+    "**Inversion.** When the procedure selects EXPO, the chance that EXPO generated the data is %s,",
+    "against %s for a uniform guess over six models. For TRADE it is %s. ITCH and DRIFT are rarely",
+    "selected but mostly right when they are, at %s and %s.\n\n",
+    "**Pooled rule.** Selecting on the sample mean, as the original comparison did, recovers %s from",
+    "their own data %s.\n\n",
+    "**Generators.** The synthetic participants' later-choice rates run from %s to %s against the",
+    "empirical %s. TRADE agents sit closest to coin flips, so TRADE's recoverability is not an",
+    "artefact of deterministic agents.\n"
+  ),
+  pct(diag_of("EXPO")), pct(diag_of("TRADE")), pct(diag_of("HYPER2")), pct(diag_of("DEXPO")),
+  pct(diag_of("ITCH")), pct(diag_of("DRIFT")),
+  pct(fam_p("discounting", "discounting")), pct(fam_p("heuristic", "heuristic")),
+  pct(expo_pull[1]), pct(expo_pull[2]), pct(trade_pull[1]), pct(trade_pull[2]),
+  pct(p_gen("EXPO", "EXPO")), pct(1 / 6), pct(p_gen("TRADE", "TRADE")),
+  pct(p_gen("ITCH", "ITCH")), pct(p_gen("DRIFT", "DRIFT")),
+  join_and(pooled_right), pooled_calls,
+  num(rate_range[1], 2), num(rate_range[2], 2), num(emp_rate, 2)
+))
+```
+:::
+
+# Parameter recovery
+
+We compare each generating parameter with the value recovered from its synthetic participant, matched by participant, and count recovered values that sit on a bound of their range. DEXPO's two exponentials are exchangeable, since swapping them and replacing the mixing weight by one minus itself leaves the likelihood unchanged, so its parameters are put in the order delta_1 ≤ delta_2 on both sides before the comparison.
+
+```{r parameter-data}
+canonical_dexpo <- function(long) {
+  # Orders DEXPO's exchangeable exponentials so that delta_1 <= delta_2, adjusting omega.
+  wide <- long %>%
+    filter(model == "DEXPO") %>%
+    pivot_wider(id_cols = subject, names_from = parameter, values_from = value)
+  swap <- wide$delta_1 > wide$delta_2
+  ordered <- wide %>%
+    mutate(
+      low = pmin(delta_1, delta_2), high = pmax(delta_1, delta_2),
+      omega = ifelse(swap, 1 - omega, omega), delta_1 = low, delta_2 = high
+    ) %>%
+    select(-low, -high) %>%
+    pivot_longer(-subject, names_to = "parameter", values_to = "value") %>%
+    mutate(model = "DEXPO")
+  bind_rows(filter(long, model != "DEXPO"), ordered)
+}
+
+agents <- canonical_dexpo(select(results$agents, subject, model, parameter, value))
+recovered <- canonical_dexpo(select(results$recovered, subject, model, parameter, value))
+
+at_bound <- function(model, parameter, value) {
+  mapply(function(m, p, v) {
+    spec <- MODELS[[m]]
+    i <- match(p, spec$par_names)
+    abs(v - spec$lower[i]) < 1e-6 * max(1, abs(spec$lower[i])) ||
+      abs(v - spec$upper[i]) < 1e-6 * max(1, abs(spec$upper[i]))
+  }, model, parameter, value)
+}
+
+bound_share <- recovered %>%
+  mutate(bound = at_bound(model, parameter, value)) %>%
+  group_by(model, parameter) %>%
+  summarise(at_bound = mean(bound), .groups = "drop")
+
+metrics <- recovery_metrics(agents, recovered) %>%
+  inner_join(bound_share, by = c("model", "parameter")) %>%
+  mutate(model = as_model(model)) %>%
+  arrange(model)
+
+log_scaled <- unlist(lapply(model_levels, function(m) {
+  setNames(MODELS[[m]]$log_start, paste(m, MODELS[[m]]$par_names))
+}))
+
+scatter <- merge(
+  agents, recovered,
+  by = c("subject", "model", "parameter"), suffixes = c("_true", "_recovered")
+) %>%
+  filter(model %in% c("EXPO", "HYPER2")) %>%
+  mutate(
+    key = paste(model, parameter),
+    logged = log_scaled[key],
+    value_true = ifelse(logged, log10(value_true), value_true),
+    value_recovered = ifelse(logged, log10(value_recovered), value_recovered),
+    panel = ifelse(logged, sprintf("%s: log10(%s)", model, parameter), sprintf("%s: %s", model, parameter)),
+    panel = factor(panel, levels = unique(panel[order(as_model(model), parameter)]))
+  )
+```
+
+```{r fig-parameters, fig.height=6}
+#| fig-cap: "Parameter recovery for the two leading discounting models: the parameter that generated each synthetic participant against the parameter recovered from it, with the identity line. Positive parameters spanning orders of magnitude are shown on a log scale."
+ggplot(scatter, aes(x = value_true, y = value_recovered)) +
+  geom_abline(slope = 1, intercept = 0, colour = "grey50", linetype = "dashed") +
+  geom_point(alpha = 0.45, size = 1.2, colour = family_colors["discounting"]) +
+  facet_wrap(~panel, scales = "free", ncol = 3) +
+  labs(x = "Generating Value", y = "Recovered Value") +
+  theme_report()
+```
+
+```{r parameter-table}
+metrics %>%
+  transmute(
+    Model = model, Parameter = parameter, Participants = n,
+    Pearson = round(pearson, 2), Spearman = round(spearman, 2), RMSE = signif(rmse, 3),
+    `At a bound` = pct(at_bound)
+  ) %>%
+  knitr::kable()
+```
+
+::: {.callout-note title="Key result"}
+```{r parameter-key-result}
+#| echo: false
+#| results: asis
+met <- function(m, p, what) metrics[[what]][metrics$model == m & metrics$parameter == p]
+weights_r <- range(metrics$pearson[metrics$model %in% c("ITCH", "DRIFT")])
+cat(sprintf(
+  paste(
+    "**Recovered.** Choice sensitivity comes back in every discounting model (Pearson r = %s for",
+    "EXPO, %s for HYPER2). So do the ITCH and DRIFT weights (r from %s to %s), as expected of a",
+    "logistic model that is linear in standardised covariates, however poorly it predicts held-out",
+    "choices.\n\n",
+    "**Not recovered.** EXPO's discount factor comes back in rank order (Spearman %s) but not in",
+    "value (Pearson %s), because the few agents generated from factors above 1 are recovered",
+    "anywhere in the range. HYPER2's rate and curvature come back at r of about %s and %s and trade",
+    "off against each other. DEXPO's mixing weight comes back at r = %s. The curvature parameters",
+    "pile up at their bounds: %s of DEXPO's smaller discount factor and %s of TRADE's amount",
+    "curvature sit at a limit of their range, which is what 25 binary choices do to a parameter",
+    "they barely constrain.\n"
+  ),
+  num(met("EXPO", "sens", "pearson"), 2), num(met("HYPER2", "sens", "pearson"), 2),
+  num(weights_r[1], 2), num(weights_r[2], 2),
+  num(met("EXPO", "delta", "spearman"), 2), num(met("EXPO", "delta", "pearson"), 2),
+  num(met("HYPER2", "k", "pearson"), 2), num(met("HYPER2", "s", "pearson"), 2),
+  num(met("DEXPO", "omega", "pearson"), 2),
+  pct(met("DEXPO", "delta_1", "at_bound")), pct(met("TRADE", "gamma_x", "at_bound"))
+))
+```
+:::
+
+# Summary
+
+`r best_model` wins the empirical comparison, but it is also the procedure's default: with 25 choices per person, the same selection arises from `r pct(p_sel("HYPER2", "EXPO"))` of HYPER2 agents, `r pct(p_sel("DEXPO", "EXPO"))` of DEXPO agents, `r pct(p_sel("ITCH", "EXPO"))` of ITCH agents, and `r pct(p_sel("DRIFT", "EXPO"))` of DRIFT agents. The win therefore says which model predicts best on this design and little about the process behind the choices. The design can tell the trade-off model from the rest, and the discounting family from the heuristic family, in roughly two cases out of three. It cannot tell exponential from hyperboloid from double-exponential discounting, or ITCH from DRIFT from a discounting model, and it pins down choice sensitivity while leaving the shape of the discount function loose. Which model wins is a claim about prediction on this design. Which model people use is a claim about mechanism, and these data do not support it for the models compared.
+
+::: {.callout-tip title="Recommended check"}
+Simulate every candidate from parameters fit to the participants, rerun the selection, and report P(generating | selected) beside the winner. When it sits near the uniform value, more choices per participant or items designed to separate the models will do more than a sharper statistic.
+:::
+
+# References
+
+Marzilli Ericson, K. M., White, J. M., Laibson, D., & Cohen, J. D. (2015). Money earlier or later? Simple heuristics explain intertemporal choices better than delay discounting does. *Psychological Science*, *26*(6), 826–833. <https://doi.org/10.1177/0956797615572232>. Data: <https://osf.io/9uxve/> (CC BY 4.0).
+
+Palminteri, S., Wyart, V., & Koechlin, E. (2017). The importance of falsification in computational cognitive modeling. *Trends in Cognitive Sciences*, *21*(6), 425–433. <https://doi.org/10.1016/j.tics.2017.03.011>
+
+Wilson, R. C., & Collins, A. G. E. (2019). Ten simple rules for the computational modeling of behavioral data. *eLife*, *8*, e49547. <https://doi.org/10.7554/eLife.49547>
+
+Wulff, D. U., & van den Bos, W. (2018). Modeling choices in delay discounting. *Psychological Science*, *29*(11), 1890–1894. <https://doi.org/10.1177/0956797616664342>
+
+# Supplement
+
+The empirical comparison on every participant with at least `r MIN_TRIALS` answered trials, beside the analysed sample.
+
+```{r sensitivity}
+empirical %>%
+  group_by(Model = model) %>%
+  summarise(
+    `All participants` = round(mean(logloss), 3),
+    `Analysed participants` = round(mean(logloss[included]), 3),
+    .groups = "drop"
+  ) %>%
+  knitr::kable()
+```
+
+::: {.callout-note collapse="true" title="Session information"}
+```{r session-info}
+sessionInfo()
+```
+:::

@@ -1,245 +1,132 @@
-# Title: Model functions for model evaluation
-# Author: Przemyslaw Marcowski, PhD
-# Email: p.marcowski@gmail.com
-# Date: 2023-05-12
-# Copyright (c) 2023 Przemyslaw Marcowski
+# Choice models for binary intertemporal choice.
+#
+# Every trial offers a smaller-sooner amount X1 at delay T1 against a larger-later
+# amount X2 at delay T2. Amounts arrive scaled to the largest later amount and the
+# attribute columns used by the heuristic models arrive standardised, both from
+# R/prepare_data.R. Each entry of MODELS supplies the probability of choosing the
+# later option before lapse smoothing, the box constraints used in fitting, the
+# box (and scale) its random starts are drawn from, and parameter names.
+#
+# Discounting models value each option and choose by a power rule; heuristic
+# models weigh trial attributes and choose by a logistic rule whose weights carry
+# the scale, so they have no separate sensitivity parameter. Definitions follow
+# Wulff and van den Bos (2018).
+#
+# The choice rules and the registry share one local environment so that every
+# probability function carries its helpers when it is shipped to a parallel
+# worker.
 
-# This code is licensed under the MIT license found in the
-# LICENSE file in the root directory of this source tree.
-
-# This script contains model functions for model evaluation and simulation
-
-EXPO_lim <- matrix(c(1e-3, 1e+2, -1e+1, 1e+1), nrow = 2)
-EXPO <- function(par, dat, choice = FALSE, epsilon = 0.001, lambda = 0.001) {
-  # Exponential model function
-  #
-  # Args:
-  #   par: Numeric vector of parameters.
-  #   dat: Data frame with necessary columns X1, X2, T1, and T2.
-  #   choice: Boolean indicating whether to return choice probability.
-  #   epsilon: Numeric smoothing parameter between 0 and 1.
-  #   lambda: Numeric regularization parameter.
-  #
-  # Returns:
-  #   If choice=TRUE, a numeric vector of choice probabilities.
-  #   If choice=FALSE, a numeric representing the negative log-likelihood.
-  
-  # Compute option values
-  ull <- dat$X2 * par[1]^dat$T2
-  uss <- dat$X1 * par[1]^dat$T1
-  
-  # Compute choice probability
-  P <- ull^par[2] / (ull^par[2] + uss^par[2])
-  
-  # Apply smoothing
-  P <- epsilon * 0.5 + (1 - epsilon) * P
-  
-  # If choice=TRUE, return probabilities
-  if (choice) {
-    return(P)
-  } else {
-    # Otherwise, compute and return negative log posterior
-    P <- ifelse(as.logical(dat$LaterOptionChosen), P, 1 - P)
-    nll <- -sum(log(P))
-    nlpr <- -sum(dnorm(par, 0, 10, log = TRUE)) # negative log prior
-    reg <- lambda * sum(par^2) # regularization term
-    nlpo <- nll + nlpr + reg # negative log posterior
-    return(nlpo)
+MODELS <- local({
+  power_rule <- function(u_later, u_sooner, sens) {
+    u_later^sens / (u_later^sens + u_sooner^sens)
   }
+
+  logistic_rule <- function(diff) {
+    1 / (1 + exp(-diff))
+  }
+
+  list(
+    EXPO = list(
+      label = "Exponential",
+      family = "discounting",
+      par_names = c("delta", "sens"),
+      lower = c(1e-3, -10),
+      upper = c(100, 10),
+      start_lower = c(1e-3, -10),
+      start_upper = c(100, 10),
+      log_start = c(TRUE, FALSE),
+      prob = function(par, dat) {
+        power_rule(dat$X2 * par[1]^dat$T2, dat$X1 * par[1]^dat$T1, par[2])
+      }
+    ),
+    HYPER2 = list(
+      label = "Hyperboloid",
+      family = "discounting",
+      par_names = c("k", "s", "sens"),
+      lower = c(1e-3, 1e-7, -10),
+      upper = c(10, 10, 10),
+      start_lower = c(1e-3, 1e-7, -10),
+      start_upper = c(10, 10, 10),
+      log_start = c(TRUE, TRUE, FALSE),
+      prob = function(par, dat) {
+        power_rule(
+          dat$X2 / (1 + par[1] * dat$T2)^par[2],
+          dat$X1 / (1 + par[1] * dat$T1)^par[2],
+          par[3]
+        )
+      }
+    ),
+    DEXPO = list(
+      label = "Dual exponential",
+      family = "discounting",
+      par_names = c("delta_1", "delta_2", "omega", "sens"),
+      lower = c(1e-3, 1e-3, 1e-7, -10),
+      upper = c(1, 1, 1, 10),
+      start_lower = c(1e-3, 1e-3, 1e-7, -10),
+      start_upper = c(1, 1, 1, 10),
+      log_start = c(TRUE, TRUE, TRUE, FALSE),
+      prob = function(par, dat) {
+        weight <- function(t) par[3] * par[1]^t + (1 - par[3]) * par[2]^t
+        power_rule(dat$X2 * weight(dat$T2), dat$X1 * weight(dat$T1), par[4])
+      }
+    ),
+    ITCH = list(
+      label = "Intertemporal choice heuristic",
+      family = "heuristic",
+      par_names = c("beta_G", "beta_R", "beta_D", "beta_T"),
+      lower = rep(-Inf, 4),
+      upper = rep(Inf, 4),
+      start_lower = rep(-3, 4),
+      start_upper = rep(3, 4),
+      log_start = rep(FALSE, 4),
+      prob = function(par, dat) {
+        logistic_rule(
+          par[1] * dat$itch_G + par[2] * dat$itch_R + par[3] * dat$itch_D + par[4] * dat$itch_T
+        )
+      }
+    ),
+    DRIFT = list(
+      label = "DRIFT",
+      family = "heuristic",
+      par_names = c("beta_D", "beta_R", "beta_I", "beta_T"),
+      lower = rep(-Inf, 4),
+      upper = rep(Inf, 4),
+      start_lower = rep(-3, 4),
+      start_upper = rep(3, 4),
+      log_start = rep(FALSE, 4),
+      prob = function(par, dat) {
+        logistic_rule(
+          par[1] * dat$drift_D + par[2] * dat$drift_R + par[3] * dat$drift_I + par[4] * dat$drift_T
+        )
+      }
+    ),
+    TRADE = list(
+      label = "Trade-off",
+      family = "heuristic",
+      par_names = c("kappa", "gamma_x", "gamma_t", "sens"),
+      lower = c(1e-7, 1e-7, 1e-7, -1e7),
+      upper = c(1e7, 1e7, 1e7, 1e7),
+      start_lower = c(1e-3, 1e-3, 1e-3, 1),
+      start_upper = c(1e3, 1e3, 1e3, 1e5),
+      log_start = c(TRUE, TRUE, TRUE, TRUE),
+      prob = function(par, dat) {
+        convert <- function(x, gamma) log1p(gamma * x) / gamma
+        gain <- convert(dat$X2, par[2]) - convert(dat$X1, par[2])
+        wait <- convert(dat$T2, par[3]) - convert(dat$T1, par[3])
+        logistic_rule(par[4] * (gain - par[1] * wait))
+      }
+    )
+  )
+})
+
+choice_prob <- function(model, par, dat, epsilon) {
+  # Probability of choosing the later option with a symmetric lapse of size epsilon.
+  epsilon / 2 + (1 - epsilon) * MODELS[[model]]$prob(par, dat)
 }
 
-HYPER2_lim <- matrix(c(1e-3, 1e+1, 1e-7, 1e+1, -1e+1, 1e+1), nrow = 2)
-HYPER2 <- function(par, dat, choice = FALSE, epsilon = 0.001, lambda = 0.001) {
-  # Hyperbolic model function
-  #
-  # Args:
-  #   par: Numeric vector of parameters.
-  #   dat: Data frame with necessary columns X1, X2, T1, and T2.
-  #   choice: Boolean indicating whether to return choice probability.
-  #   epsilon: Numeric smoothing parameter between 0 and 1.
-  #
-  # Returns:
-  #   If choice=TRUE, a numeric vector of choice probabilities.
-  #   If choice=FALSE, a numeric representing the negative log-likelihood.
-  
-  # Compute option values
-  ull <- dat$X2 * (1 / (1 + par[1] * dat$T2)^par[2])
-  uss <- dat$X1 * (1 / (1 + par[1] * dat$T1)^par[2])
-  
-  # Compute choice probability
-  P <- ull^par[3] / (ull^par[3] + uss^par[3])
-  
-  # Apply smoothing
-  P <- epsilon * 0.5 + (1 - epsilon) * P
-  
-  # If choice=TRUE, return probabilities
-  if (choice) {
-    return(P)
-  } else {
-    # Otherwise, compute and return negative log posterior
-    P <- ifelse(as.logical(dat$LaterOptionChosen), P, 1 - P)
-    nll <- -sum(log(P))
-    nlpr <- -sum(dnorm(par, 0, 10, log = TRUE)) # negative log prior
-    reg <- lambda * sum(par^2) # regularization term
-    nlpo <- nll + nlpr + reg # negative log posterior
-    return(nlpo)
-  }
-}
-
-DEXPO_lim <- matrix(c(1e-3, 1, 1e-3, 1, 1e-7, 1, -1e+1, 1e+1), nrow = 2)
-DEXPO <- function(par, dat, choice = FALSE, epsilon = 0.001, lambda = 0.001) {
-  # Dual-Exponential model function
-  #
-  # Args:
-  #   par: Numeric vector of parameters.
-  #   dat: Data frame with necessary columns X1, X2, T1, and T2.
-  #   choice: Boolean indicating whether to return choice probability.
-  #   epsilon: Numeric smoothing parameter between 0 and 1.
-  #
-  # Returns:
-  #   If choice=TRUE, a numeric vector of choice probabilities.
-  #   If choice=FALSE, a numeric representing the negative log-likelihood.
-  
-  # Compute option values
-  ull <- dat$X2 * ((par[3] * par[1]^dat$T2) + ((1 - par[3]) * par[2]^dat$T2))
-  uss <- dat$X1 * ((par[3] * par[1]^dat$T1) + ((1 - par[3]) * par[2]^dat$T1))
-  
-  # Compute choice probability
-  P <- ull^par[4] / (ull^par[4] + uss^par[4])
-  
-  # Apply smoothing
-  P <- epsilon * 0.5 + (1 - epsilon) * P
-  
-  # If choice=TRUE, return probabilities
-  if (choice) {
-    return(P)
-  } else {
-    # Otherwise, compute and return negative log posterior
-    P <- ifelse(as.logical(dat$LaterOptionChosen), P, 1 - P)
-    nll <- -sum(log(P))
-    nlpr <- -sum(dnorm(par, 0, 10, log = TRUE)) # negative log prior
-    reg <- lambda * sum(par^2) # regularization term
-    nlpo <- nll + nlpr + reg # negative log posterior
-    return(nlpo)
-  }
-}
-
-ITCH_lim <- matrix(c(-Inf, Inf, -Inf, Inf, -Inf, Inf, -Inf, Inf, -1e+7, 1e+7), nrow = 2)
-ITCH <- function(par, dat, choice = FALSE, epsilon = 0.001, lambda = 0.001) {
-  # Choice heuristic model function
-  #
-  # Args:
-  #   par: Numeric vector of parameters.
-  #   dat: Data frame with necessary columns G, R, D, and T.
-  #   choice: Boolean indicating whether to return choice probability.
-  #   epsilon: Numeric smoothing parameter between 0 and 1.
-  #
-  # Returns:
-  #   If choice=TRUE, a numeric vector of choice probabilities.
-  #   If choice=FALSE, a numeric representing the negative log-likelihood.
-  
-  # Compute the difference in option values
-  diff <- (par[1] * dat$G + par[2] * dat$R + par[3] * dat$D + par[4] * dat$T)
-  
-  # Compute choice probability
-  P <- 1 / (1 + exp(-par[5] * diff))
-  
-  # Apply smoothing
-  P <- epsilon * 0.5 + (1 - epsilon) * P
-  
-  # If choice=TRUE, return probabilities
-  if (choice) {
-    return(P)
-  } else {
-    # Otherwise, compute and return negative log posterior
-    P <- ifelse(as.logical(dat$LaterOptionChosen), P, 1 - P)
-    nll <- -sum(log(P))
-    nlpr <- -sum(dnorm(par, 0, 10, log = TRUE)) # negative log prior
-    reg <- lambda * sum(par^2) # regularization term
-    nlpo <- nll + nlpr + reg # negative log posterior
-    return(nlpo)
-  }
-}
-
-DRIFT_lim <- matrix(c(-Inf, Inf, -Inf, Inf, -Inf, Inf, -Inf, Inf, -1e+7, 1e+7), nrow = 2)
-DRIFT <- function(par, dat, choice = FALSE, epsilon = 0.001, lambda = 0.001) {
-  # DRIFT model function
-  #
-  # Args:
-  #   par: Numeric vector of parameters.
-  #   dat: Data frame with necessary columns DriftD, DriftR, DriftI, and DriftT.
-  #   choice: Boolean indicating whether to return choice probability.
-  #   epsilon: Numeric smoothing parameter between 0 and 1.
-  #
-  # Returns:
-  #   If choice=TRUE, a numeric vector of choice probabilities.
-  #   If choice=FALSE, a numeric representing the negative log-likelihood.
-  
-  # Compute the difference in option values
-  diff <- (par[1] * dat$Drift_D + par[2] * dat$Drift_R + par[3] * dat$Drift_I + par[4] * dat$Drift_T)
-  
-  # Compute choice probability
-  P <- 1 / (1 + exp(-par[5] * diff))
-  
-  # Apply smoothing
-  P <- epsilon * 0.5 + (1 - epsilon) * P
-  
-  # If choice=TRUE, return probabilities
-  if (choice) {
-    return(P)
-  } else {
-    # Otherwise, compute and return negative log posterior
-    P <- ifelse(as.logical(dat$LaterOptionChosen), P, 1 - P)
-    nll <- -sum(log(P))
-    nlpr <- -sum(dnorm(par, 0, 10, log = TRUE)) # negative log prior
-    reg <- lambda * sum(par^2) # regularization term
-    nlpo <- nll + nlpr + reg # negative log posterior
-    return(nlpo)
-  }
-}
-
-TRADE_lim <- matrix(c(1e-7, 1e+7, 1e-7, 1e+7, 1e-7, 1e+7, -1e+7, 1e+7), nrow = 2)
-TRADE <- function(par, dat, choice = FALSE, epsilon = 0.001, lambda = 0.001) {
-  # TRADE model function
-  #
-  # Args:
-  #   par: Numeric vector of parameters.
-  #   dat: Data frame with necessary columns X1, X2, T1, and T2.
-  #   choice: Boolean indicating whether to return choice probability.
-  #   epsilon: Numeric smoothing parameter between 0 and 1.
-  #
-  # Returns:
-  #   If choice=TRUE, a numeric vector of choice probabilities.
-  #   If choice=FALSE, a numeric representing the negative log-likelihood.
-  
-  # Utility conversion function
-  .cnv <- function(x, g) {log(1 + g * x) / g}
-  
-  # Compute converted utilities
-  a1 <- .cnv(dat$X2, par[2])
-  a2 <- .cnv(dat$X1, par[2])
-  a3 <- .cnv(dat$T2, par[3])
-  a4 <- .cnv(dat$T1, par[3])
-  
-  # Compute the difference in option values
-  diff <- ((a1 - a2) - par[1] * (a3 - a4))
-  
-  # Compute choice probability
-  P <- 1 / (1 + exp(-par[4] * diff))
-  
-  # Apply smoothing
-  P <- epsilon * 0.5 + (1 - epsilon) * P
-  
-  # If choice=TRUE, return probabilities
-  if (choice) {
-    return(P)
-  } else {
-    # Otherwise, compute and return negative log posterior
-    P <- ifelse(as.logical(dat$LaterOptionChosen), P, 1 - P)
-    nll <- -sum(log(P))
-    nlpr <- -sum(dnorm(par, 0, 10, log = TRUE)) # negative log prior
-    reg <- lambda * sum(par^2) # regularization term
-    nlpo <- nll + nlpr + reg # negative log posterior
-    return(nlpo)
-  }
+penalised_nll <- function(par, model, dat, epsilon, prior_sd) {
+  # Negative log-likelihood of the observed choices plus a weak Gaussian prior on
+  # every parameter, the objective minimised in fitting.
+  p <- choice_prob(model, par, dat, epsilon)
+  -sum(ifelse(dat$later == 1L, log(p), log1p(-p))) - sum(dnorm(par, 0, prior_sd, log = TRUE))
 }
